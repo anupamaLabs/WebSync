@@ -96,13 +96,25 @@ export function WebsiteModal({ isOpen, onClose, onSave, initialData }: WebsiteMo
     setScrapedPreview(null);
 
     try {
+      // Get current dbState from localStorage to sync settings/API keys
+      let dbState = null;
+      try {
+        const dbStr = localStorage.getItem('websync_db');
+        if (dbStr) {
+          dbState = JSON.parse(dbStr);
+        }
+      } catch (err) {
+        // Non-critical, ignore
+      }
+
       const res = await fetch('/api/websites/scrape', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           url, 
           niche, 
-          competitors: competitors.split(',').map(c => c.trim()).filter(c => c.length > 0) 
+          competitors: competitors.split(',').map(c => c.trim()).filter(c => c.length > 0),
+          dbState
         }),
       });
       const data = await res.json();

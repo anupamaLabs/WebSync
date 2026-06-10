@@ -1,13 +1,18 @@
 import { NextResponse } from 'next/server';
 import { scrapeWebsite } from '../../../../lib/scraper';
+import { writeDb } from '../../../../lib/db';
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { url, niche, competitors } = body;
+    const { url, niche, competitors, dbState } = body;
 
     if (!url) {
       return NextResponse.json({ error: 'URL is required' }, { status: 400 });
+    }
+
+    if (dbState) {
+      writeDb(dbState);
     }
 
     const scrapedData = await scrapeWebsite(url, niche, competitors);

@@ -54,6 +54,17 @@ interface Settings {
   brandVoiceDescription: string;
 }
 
+const defaultSettings: Settings = {
+  geminiApiKey: '',
+  wordpressUrl: '',
+  wordpressUsername: '',
+  wordpressPassword: '',
+  twitterMock: true,
+  linkedinMock: true,
+  wordpressMock: true,
+  brandVoiceDescription: 'Helpful, professional tech writer focusing on actionable insights.',
+};
+
 interface Log {
   id: string;
   timestamp: string;
@@ -129,26 +140,98 @@ export default function DashboardPage() {
     fetchData();
   }, []);
 
+  const saveToLocalStorage = (newWebsites: Website[], newPosts: Post[], newSettings: Settings, newLogs: Log[]) => {
+    const db = { websites: newWebsites, posts: newPosts, settings: newSettings, logs: newLogs };
+    localStorage.setItem('websync_db', JSON.stringify(db));
+  };
+
   const fetchData = async () => {
     setIsLoading(true);
     try {
-      const [webRes, postsRes, settingsRes, logsRes] = await Promise.all([
-        fetch('/api/websites', { cache: 'no-store' }),
-        fetch('/api/posts', { cache: 'no-store' }),
-        fetch('/api/settings', { cache: 'no-store' }),
-        fetch('/api/logs', { cache: 'no-store' }),
-      ]);
-
-      if (webRes.ok) setWebsites(await webRes.json());
-      if (postsRes.ok) {
-        const postsData = await postsRes.json();
-        setPosts(postsData);
-        if (postsData.length > 0 && !selectedPost) {
-          setSelectedPost(postsData[0]);
+      // Load from localStorage first to keep UI fast
+      const localDbStr = localStorage.getItem('websync_db');
+      let localDb = null;
+      if (localDbStr) {
+        localDb = JSON.parse(localDbStr);
+        setWebsites(localDb.websites || []);
+        setPosts(localDb.posts || []);
+        if (localDb.posts && localDb.posts.length > 0 && !selectedPost) {
+          setSelectedPost(localDb.posts[0]);
         }
+        setSettings(localDb.settings || defaultSettings);
+        setLogs(localDb.logs || []);
+        setIsLoading(false);
       }
-      if (settingsRes.ok) setSettings(await settingsRes.json());
-      if (logsRes.ok) setLogs(await logsRes.json());
+
+      // Sync local storage DB state to server container /tmp/data/db.json
+      if (localDb) {
+        fetch('/api/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dbState: localDb }),
+        }).catch(() => {});
+      }
+
+      // Fetch fresh settings and sync check from server
+      const settingsRes = await fetch('/api/settings', { cache: 'no-store' });
+      if (settingsRes.ok) {
+        const serverSettings = await settingsRes.json();
+        setSettings(prev => {
+          const updated = {
+            ...prev,
+            ...serverSettings,
+            // Prioritize server-configured API key if client has none or server key is updated
+            geminiApiKey: serverSettings.geminiApiKey || prev.geminiApiKey
+          };
+          if (localDbStr) {
+            try {
+              const dbObj = JSON.parse(localDbStr);
+              dbObj.settings = updated;
+              localStorage.setItem('websync_db', JSON.stringify(dbObj));
+            } catch {}
+          }
+          return updated;
+        });
+      }
+
+      // If local storage is empty, fetch all initial database stats from server
+      if (!localDbStr) {
+        const [webRes, postsRes, settingsRes, logsRes] = await Promise.all([
+          fetch('/api/websites', { cache: 'no-store' }),
+          fetch('/api/posts', { cache: 'no-store' }),
+          fetch('/api/settings', { cache: 'no-store' }),
+          fetch('/api/logs', { cache: 'no-store' }),
+        ]);
+
+        let webs = [];
+        let psts = [];
+        let sets = defaultSettings;
+        let lgs = [];
+
+        if (webRes.ok) webs = await webRes.json();
+        if (postsRes.ok) {
+          psts = await postsRes.json();
+          if (psts.length > 0 && !selectedPost) {
+            setSelectedPost(psts[0]);
+          }
+        }
+        if (settingsRes.ok) sets = await settingsRes.json();
+        if (logsRes.ok) lgs = await logsRes.json();
+
+        setWebsites(webs);
+        setPosts(psts);
+        setSettings(sets);
+        setLogs(lgs);
+
+        saveToLocalStorage(webs, psts, sets, lgs);
+        
+        // Push initial database state to the sync endpoint
+        fetch('/api/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dbState: { websites: webs, posts: psts, settings: sets, logs: lgs } }),
+        }).catch(() => {});
+      }
     } catch (err) {
       showNotification('Failed to retrieve system status.', 'error');
     } finally {
@@ -166,22 +249,30 @@ export default function DashboardPage() {
     const isEdit = !!siteData.id;
     const url = isEdit ? `/api/websites?id=${siteData.id}` : '/api/websites';
     const method = isEdit ? 'PUT' : 'POST';
+    const dbState = { websites, posts, settings, logs };
 
     try {
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(siteData),
+        body: JSON.stringify({ ...siteData, dbState }),
       });
 
       if (res.ok) {
+        const { result: savedSite, dbState: returnedDb } = await res.json();
+        
+        setWebsites(returnedDb.websites);
+        setPosts(returnedDb.posts);
+        setSettings(returnedDb.settings);
+        setLogs(returnedDb.logs);
+        saveToLocalStorage(returnedDb.websites, returnedDb.posts, returnedDb.settings, returnedDb.logs);
+
         showNotification(
           isEdit ? 'Website credentials updated.' : 'Website synchronized successfully.',
           'success'
         );
         setIsWebsiteModalOpen(false);
         setEditingWebsite(undefined);
-        fetchData();
       } else {
         const data = await res.json();
         showNotification(data.error || 'Operation failed.', 'error');
@@ -194,11 +285,28 @@ export default function DashboardPage() {
   // Delete Website
   const handleDeleteWebsite = async (id: string) => {
     if (!confirm('Are you sure you want to delete this website connection? All scheduled drafts will be removed.')) return;
+    const dbState = { websites, posts, settings, logs };
+
     try {
-      const res = await fetch(`/api/websites?id=${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/websites?id=${id}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dbState }),
+      });
       if (res.ok) {
+        const { dbState: returnedDb } = await res.json();
+        
+        setWebsites(returnedDb.websites);
+        setPosts(returnedDb.posts);
+        setSettings(returnedDb.settings);
+        setLogs(returnedDb.logs);
+        saveToLocalStorage(returnedDb.websites, returnedDb.posts, returnedDb.settings, returnedDb.logs);
+
+        if (selectedPost && selectedPost.websiteId === id) {
+          setSelectedPost(null);
+        }
+        
         showNotification('Website disconnected successfully.', 'success');
-        fetchData();
       } else {
         showNotification('Failed to disconnect website.', 'error');
       }
@@ -211,16 +319,26 @@ export default function DashboardPage() {
   const handleTriggerGenerate = async (websiteId: string) => {
     setIsGenerating(true);
     showNotification('AI content agent is analyzing website feeds and drafting articles...', 'info');
+    const dbState = { websites, posts, settings, logs };
+
     try {
       const res = await fetch('/api/posts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ websiteId }),
+        body: JSON.stringify({ websiteId, dbState }),
       });
       if (res.ok) {
-        const newPost = await res.json();
+        const { result: newPost, dbState: returnedDb } = await res.json();
+        
+        setWebsites(returnedDb.websites);
+        setPosts(returnedDb.posts);
+        setSettings(returnedDb.settings);
+        setLogs(returnedDb.logs);
+        saveToLocalStorage(returnedDb.websites, returnedDb.posts, returnedDb.settings, returnedDb.logs);
+
+        const matchedPost = returnedDb.posts.find((p: Post) => p.id === newPost.id) || newPost;
+        setSelectedPost(matchedPost);
         showNotification(`Draft Generated: "${newPost.blogTitle}"`, 'success');
-        fetchData();
       } else {
         const data = await res.json();
         showNotification(data.error || 'Content generation failed.', 'error');
@@ -236,13 +354,30 @@ export default function DashboardPage() {
   const handleTriggerTick = async () => {
     setIsTicking(true);
     showNotification('Scheduler check initiated. Syncing feeds and processing scheduled posts...', 'info');
+    const dbState = { websites, posts, settings, logs };
+
     try {
-      const res = await fetch('/api/scheduler/tick', { method: 'POST' });
+      const res = await fetch('/api/scheduler/tick', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dbState }),
+      });
       if (res.ok) {
-        const summary = await res.json();
+        const { result: summary, dbState: returnedDb } = await res.json();
+        
+        setWebsites(returnedDb.websites);
+        setPosts(returnedDb.posts);
+        setSettings(returnedDb.settings);
+        setLogs(returnedDb.logs);
+        saveToLocalStorage(returnedDb.websites, returnedDb.posts, returnedDb.settings, returnedDb.logs);
+
+        if (returnedDb.posts.length > 0) {
+          const stillExists = returnedDb.posts.find((p: Post) => selectedPost && p.id === selectedPost.id);
+          setSelectedPost(stillExists || returnedDb.posts[0]);
+        }
+        
         const msg = `Scheduler sync complete. Scraped: ${summary.websitesScanned.length}, Created Drafts: ${summary.postsGenerated.length}, Published: ${summary.postsPublished.length}.`;
         showNotification(msg, 'success');
-        fetchData();
       } else {
         showNotification('Scheduler tick process failed.', 'error');
       }
@@ -257,17 +392,26 @@ export default function DashboardPage() {
   const handlePublishNow = async (postId: string) => {
     setIsPublishing(true);
     showNotification('Post distribution pipeline triggered. Publishing to WordPress and socials...', 'info');
+    const dbState = { websites, posts, settings, logs };
+
     try {
       const res = await fetch('/api/publish', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ postId }),
+        body: JSON.stringify({ postId, dbState }),
       });
       if (res.ok) {
-        const updated = await res.json();
-        setSelectedPost(updated);
+        const { result: updatedPost, dbState: returnedDb } = await res.json();
+        
+        setWebsites(returnedDb.websites);
+        setPosts(returnedDb.posts);
+        setSettings(returnedDb.settings);
+        setLogs(returnedDb.logs);
+        saveToLocalStorage(returnedDb.websites, returnedDb.posts, returnedDb.settings, returnedDb.logs);
+
+        const matchedPost = returnedDb.posts.find((p: Post) => p.id === postId) || updatedPost;
+        setSelectedPost(matchedPost);
         showNotification('Post distributed successfully!', 'success');
-        fetchData();
       } else {
         const data = await res.json();
         showNotification(data.error || 'Distribution pipeline failed.', 'error');
@@ -282,15 +426,24 @@ export default function DashboardPage() {
   // Update Settings
   const handleUpdateSettings = async (e: React.FormEvent) => {
     e.preventDefault();
+    const dbState = { websites, posts, settings, logs };
+
     try {
       const res = await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings),
+        body: JSON.stringify({ ...settings, dbState }),
       });
       if (res.ok) {
+        const { result: updatedSettings, dbState: returnedDb } = await res.json();
+        
+        setWebsites(returnedDb.websites);
+        setPosts(returnedDb.posts);
+        setSettings(returnedDb.settings);
+        setLogs(returnedDb.logs);
+        saveToLocalStorage(returnedDb.websites, returnedDb.posts, returnedDb.settings, returnedDb.logs);
+
         showNotification('Settings updated successfully.', 'success');
-        fetchData();
       } else {
         showNotification('Failed to save settings.', 'error');
       }
@@ -301,18 +454,34 @@ export default function DashboardPage() {
 
   // Post Approval (schedule for publishing)
   const handleApprovePost = async (id: string, date?: string) => {
+    const targetScheduledFor = date || new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+    const dbState = { websites, posts, settings, logs };
+
     try {
       const res = await fetch(`/api/posts?id=${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           status: 'scheduled',
-          scheduledFor: date || new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString()
+          scheduledFor: targetScheduledFor,
+          dbState
         }),
       });
       if (res.ok) {
+        const { dbState: returnedDb } = await res.json();
+        
+        setWebsites(returnedDb.websites);
+        setPosts(returnedDb.posts);
+        setSettings(returnedDb.settings);
+        setLogs(returnedDb.logs);
+        saveToLocalStorage(returnedDb.websites, returnedDb.posts, returnedDb.settings, returnedDb.logs);
+
+        const matchedPost = returnedDb.posts.find((p: Post) => p.id === id);
+        if (matchedPost) {
+          setSelectedPost(matchedPost);
+        }
+        
         showNotification('Post approved and added to active queue.', 'success');
-        fetchData();
       } else {
         showNotification('Failed to approve post.', 'error');
       }
@@ -324,12 +493,27 @@ export default function DashboardPage() {
   // Delete Post
   const handleDeletePost = async (id: string) => {
     if (!confirm('Are you sure you want to delete this post draft?')) return;
+    const dbState = { websites, posts, settings, logs };
+
     try {
-      const res = await fetch(`/api/posts?id=${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/posts?id=${id}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dbState }),
+      });
       if (res.ok) {
+        const { dbState: returnedDb } = await res.json();
+        
+        setWebsites(returnedDb.websites);
+        setPosts(returnedDb.posts);
+        setSettings(returnedDb.settings);
+        setLogs(returnedDb.logs);
+        saveToLocalStorage(returnedDb.websites, returnedDb.posts, returnedDb.settings, returnedDb.logs);
+
+        if (selectedPost && selectedPost.id === id) {
+          setSelectedPost(returnedDb.posts[0] || null);
+        }
         showNotification('Draft removed.', 'success');
-        setSelectedPost(null);
-        fetchData();
       } else {
         showNotification('Failed to delete draft.', 'error');
       }
@@ -352,26 +536,39 @@ export default function DashboardPage() {
   // Save edited post
   const handleSaveEditPost = async () => {
     if (!selectedPost) return;
+    const updatedData = {
+      blogTitle: editTitle,
+      blogExcerpt: editExcerpt,
+      blogContent: editContent,
+      socialTwitter: editTwitter,
+      socialLinkedIn: editLinkedIn,
+      scheduledFor: new Date(editScheduledFor).toISOString(),
+    };
+    const dbState = { websites, posts, settings, logs };
+
     try {
       const res = await fetch(`/api/posts?id=${selectedPost.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          blogTitle: editTitle,
-          blogExcerpt: editExcerpt,
-          blogContent: editContent,
-          socialTwitter: editTwitter,
-          socialLinkedIn: editLinkedIn,
-          scheduledFor: new Date(editScheduledFor).toISOString(),
-        }),
+        body: JSON.stringify({ ...updatedData, dbState }),
       });
 
       if (res.ok) {
-        const updated = await res.json();
-        setSelectedPost(updated);
+        const { dbState: returnedDb } = await res.json();
+        
+        setWebsites(returnedDb.websites);
+        setPosts(returnedDb.posts);
+        setSettings(returnedDb.settings);
+        setLogs(returnedDb.logs);
+        saveToLocalStorage(returnedDb.websites, returnedDb.posts, returnedDb.settings, returnedDb.logs);
+
+        const matchedPost = returnedDb.posts.find((p: Post) => p.id === selectedPost.id);
+        if (matchedPost) {
+          setSelectedPost(matchedPost);
+        }
+        
         setIsEditingPost(false);
         showNotification('Post edits saved successfully.', 'success');
-        fetchData();
       } else {
         showNotification('Failed to save post edits.', 'error');
       }

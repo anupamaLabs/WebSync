@@ -1,6 +1,6 @@
 export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
-import { getWebsites, addWebsite, updateWebsite, deleteWebsite } from '../../../lib/db';
+import { getWebsites, addWebsite, updateWebsite, deleteWebsite, writeDb, readDb } from '../../../lib/db';
 
 export async function GET() {
   try {
@@ -14,8 +14,12 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { name, url, niche, tone, keywords, competitors, intervalHours, status } = body;
+    const { name, url, niche, tone, keywords, competitors, intervalHours, status, dbState } = body;
     
+    if (dbState) {
+      writeDb(dbState);
+    }
+
     if (!name || !url) {
       return NextResponse.json({ error: 'Name and URL are required' }, { status: 400 });
     }
@@ -31,7 +35,8 @@ export async function POST(request: Request) {
       status: status || 'active',
     });
 
-    return NextResponse.json(newSite, { status: 201 });
+    const finalDb = readDb();
+    return NextResponse.json({ result: newSite, dbState: finalDb }, { status: 201 });
   } catch (error: any) {
     return NextResponse.json({ error: error.message || 'Failed to add website' }, { status: 500 });
   }
@@ -47,9 +52,15 @@ export async function PUT(request: Request) {
     }
 
     const body = await request.json();
-    const updated = updateWebsite(id, body);
-    
-    return NextResponse.json(updated);
+    const { dbState, ...siteData } = body;
+
+    if (dbState) {
+      writeDb(dbState);
+    }
+
+    const updated = updateWebsite(id, siteData);
+    const finalDb = readDb();
+    return NextResponse.json({ result: updated, dbState: finalDb });
   } catch (error: any) {
     return NextResponse.json({ error: error.message || 'Failed to update website' }, { status: 500 });
   }
@@ -64,8 +75,21 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: 'Website ID is required' }, { status: 400 });
     }
 
+    let dbState = null;
+    try {
+      const body = await request.json();
+      dbState = body?.dbState;
+    } catch {
+      // Body might be empty, ignore
+    }
+
+    if (dbState) {
+      writeDb(dbState);
+    }
+
     deleteWebsite(id);
-    return NextResponse.json({ message: 'Website deleted successfully' });
+    const finalDb = readDb();
+    return NextResponse.json({ message: 'Website deleted successfully', dbState: finalDb });
   } catch (error: any) {
     return NextResponse.json({ error: error.message || 'Failed to delete website' }, { status: 500 });
   }

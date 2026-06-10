@@ -1,6 +1,6 @@
 export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
-import { getPosts, addPost, updatePost, deletePost, getWebsites, addLog } from '../../../lib/db';
+import { getPosts, addPost, updatePost, deletePost, getWebsites, addLog, writeDb, readDb } from '../../../lib/db';
 import { generateContent } from '../../../lib/ai';
 import { scrapeWebsite } from '../../../lib/scraper';
 
@@ -18,7 +18,11 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { websiteId, topic, scheduledFor } = body;
+    const { websiteId, topic, scheduledFor, dbState } = body;
+
+    if (dbState) {
+      writeDb(dbState);
+    }
 
     if (!websiteId) {
       return NextResponse.json({ error: 'Website ID is required' }, { status: 400 });
@@ -72,7 +76,9 @@ export async function POST(request: Request) {
     });
 
     addLog('info', `Manually generated post draft: "${newPost.blogTitle}" for website ${site.name}`);
-    return NextResponse.json(newPost, { status: 201 });
+    
+    const finalDb = readDb();
+    return NextResponse.json({ result: newPost, dbState: finalDb }, { status: 201 });
   } catch (error: any) {
     return NextResponse.json({ error: error.message || 'Failed to generate post' }, { status: 500 });
   }
@@ -88,8 +94,15 @@ export async function PUT(request: Request) {
     }
 
     const body = await request.json();
-    const updated = updatePost(id, body);
-    return NextResponse.json(updated);
+    const { dbState, ...postData } = body;
+
+    if (dbState) {
+      writeDb(dbState);
+    }
+
+    const updated = updatePost(id, postData);
+    const finalDb = readDb();
+    return NextResponse.json({ result: updated, dbState: finalDb });
   } catch (error: any) {
     return NextResponse.json({ error: error.message || 'Failed to update post' }, { status: 500 });
   }
@@ -104,8 +117,21 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: 'Post ID is required' }, { status: 400 });
     }
 
+    let dbState = null;
+    try {
+      const body = await request.json();
+      dbState = body?.dbState;
+    } catch {
+      // Body might be empty, ignore
+    }
+
+    if (dbState) {
+      writeDb(dbState);
+    }
+
     deletePost(id);
-    return NextResponse.json({ message: 'Post deleted successfully' });
+    const finalDb = readDb();
+    return NextResponse.json({ message: 'Post deleted successfully', dbState: finalDb });
   } catch (error: any) {
     return NextResponse.json({ error: error.message || 'Failed to delete post' }, { status: 500 });
   }
