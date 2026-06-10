@@ -1,3 +1,4 @@
+export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { getPosts, addPost, updatePost, deletePost, getWebsites, addLog } from '../../../lib/db';
 import { generateContent } from '../../../lib/ai';

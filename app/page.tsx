@@ -133,10 +133,10 @@ export default function DashboardPage() {
     setIsLoading(true);
     try {
       const [webRes, postsRes, settingsRes, logsRes] = await Promise.all([
-        fetch('/api/websites'),
-        fetch('/api/posts'),
-        fetch('/api/settings'),
-        fetch('/api/logs'),
+        fetch('/api/websites', { cache: 'no-store' }),
+        fetch('/api/posts', { cache: 'no-store' }),
+        fetch('/api/settings', { cache: 'no-store' }),
+        fetch('/api/logs', { cache: 'no-store' }),
       ]);
 
       if (webRes.ok) setWebsites(await webRes.json());
