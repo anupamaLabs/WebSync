@@ -112,8 +112,8 @@ export default function DashboardPage() {
       setTheme(savedTheme);
       document.documentElement.classList.toggle('dark', savedTheme === 'dark');
     } else {
-      setTheme('light');
-      document.documentElement.classList.remove('dark');
+      setTheme('dark');
+      document.documentElement.classList.add('dark');
     }
   }, []);
 

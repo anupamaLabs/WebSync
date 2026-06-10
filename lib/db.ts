@@ -1,7 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 
-const DB_DIR = path.join(process.cwd(), 'data');
+const isVercel = process.env.VERCEL === '1' || process.env.VERCEL_ENV !== undefined || process.env.NOW_BUILDER !== undefined;
+const DB_DIR = isVercel ? path.join('/tmp', 'data') : path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DB_DIR, 'db.json');
 
 export interface Website {
@@ -333,6 +334,9 @@ export function deletePost(id: string) {
 // Helpers for Settings
 export function getSettings(): Settings {
   const db = readDb();
+  if (process.env.GEMINI_API_KEY) {
+    db.settings.geminiApiKey = process.env.GEMINI_API_KEY;
+  }
   return db.settings;
 }
 
